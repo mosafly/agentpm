@@ -1,6 +1,6 @@
 {
-  "name": "UX Spec Generator - Extended",
-  "id": "ux-spec-generator-extended",
+  "name": "Agent PM",
+  "id": "agent-pm",
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
@@ -12,15 +12,13 @@
   "networkAccess": {
     "allowedDomains": [
       "https://api.cloudinary.com",
+      "https://res.cloudinary.com",
       "https://n8n.box.africa",
-      "https://agile.box.africa",
-      "https://www.gravatar.com"
+      "https://agile.box.africa"
     ],
     "devAllowedDomains": [
-      "http://localhost:3000",
-      "http://localhost:5678",
-      "https://localhost:3000",
-      "https://localhost:5678"
-    ]
+      "http://localhost:5678"
+    ],
+    "reasoning": "Accès à Cloudinary pour l'upload d'images, n8n pour l'orchestration et localhost pour le développement"
   }
 }

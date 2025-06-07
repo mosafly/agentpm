@@ -670,8 +670,8 @@ if (initialSelection) {
             const uploadPreset = document.getElementById('uploadPreset').value;
             
             if (!cloudName || !uploadPreset) {
-                // Fallback sur Imgur si Cloudinary n'est pas configuré
-                return await uploadToImgur(base64Image);
+                // Aucun service d'upload configuré
+                throw new Error('Veuillez configurer Cloudinary pour pouvoir exporter les images.');
             }
             
             const formData = new FormData();
@@ -691,25 +691,10 @@ if (initialSelection) {
             return data.secure_url;
         }
         
-        // Fallback: Upload sur Imgur
-        async function uploadToImgur(base64Image) {
-            const response = await fetch('https://api.imgur.com/3/image', {
-                method: 'POST',
-                headers: {
-                    'Authorization': 'Client-ID 5e7b6c47e7c3903' // Client ID public pour tests
-                },
-                body: JSON.stringify({
-                    image: base64Image,
-                    type: 'base64'
-                })
-            });
-            
-            const data = await response.json();
-            if (data.success) {
-                return data.data.link;
-            } else {
-                throw new Error('Erreur Imgur: ' + data.data.error);
-            }
+        // Gestion des erreurs d'upload
+        function handleUploadError(error) {
+            console.error('Erreur lors de l\'upload de l\'image:', error);
+            throw new Error('Échec de l\'upload de l\'image. Veuillez vérifier votre configuration Cloudinary.');
         }
         
         // Afficher le statut
@@ -828,7 +813,7 @@ if (initialSelection) {
    - Créez un "Upload Preset" non signé
    - Renseignez votre Cloud Name et Upload Preset
 
-3. Si vous ne configurez pas Cloudinary, le plugin utilisera Imgur par défaut
+3. Cloudinary doit être configuré pour pouvoir exporter les images
 
 ## Utilisation
 

@@ -1,137 +1,60 @@
 // Code principal du plugin Figma étendu
-console.log('🚀 UX Spec Generator Extended - Démarrage');
+console.log('🚀 Agent PM - Démarrage');
 
 // Configuration
 const CONFIG = {
-  // Par défaut, utiliser Imgur pour les uploads d'images
-  use_imgur: true,
+  // Configuration Cloudinary
   cloudinary: {
-    cloud_name: '',
-    upload_preset: ''
+    cloud_name: 'du9e3f5rh', // Valeur par défaut
+    upload_preset: 'ux-specs-preset' // Valeur par défaut
   },
-  // Configuration MCP
-  mcp: {
-    enabled: true,
-    server_url: 'http://localhost:3000/mcp',
+  // Configuration n8n
+  n8n: {
+    webhook_url: 'http://localhost:5678/webhook/figma-analysis', // URL du webhook n8n
     timeout: 60000 // 60 secondes
   }
 };
 
-// Classe pour communiquer avec le serveur MCP Figma
-class MCPClient {
+// Classe pour communiquer avec n8n via webhook
+class N8nClient {
   constructor(config) {
-    this.config = config;
-    this.enabled = config.enabled;
-    this.serverUrl = config.server_url;
+    this.webhookUrl = config.webhook_url;
     this.timeout = config.timeout || 30000;
-    console.log('🔍 Initialisation MCP Client:', this.enabled ? 'Activé' : 'Désactivé');
+    console.log('🔍 Initialisation N8n Client');
   }
   
-  // Appel d'un outil MCP via l'UI (car le plugin Figma ne peut pas faire de requêtes HTTP directement)
-  async call(toolName, params) {
-    if (!this.enabled) {
-      console.warn('⚠️ MCP désactivé, utilisation du mode local');
-      return this.fallbackLocalProcessing(toolName, params);
-    }
+  // Envoi des données à n8n
+  async sendToN8n(data) {
+    console.log(`🔄 Envoi à n8n`);
     
-    console.log(`🔍 Appel MCP: ${toolName}`, params);
-    
-    // Créer une promesse pour attendre la réponse de l'UI
-    return new Promise((resolve, reject) => {
-      // Sauvegarder l'ancien gestionnaire de messages
-      const oldHandler = figma.ui.onmessage;
-      
-      // Timeout ID
-      let timeoutId;
-      
-      // Nouveau gestionnaire de messages temporaire
-      figma.ui.onmessage = (msg) => {
-        if (msg.type === 'mcp-response' && msg.requestId === params.requestId) {
-          // Restaurer l'ancien gestionnaire
-          figma.ui.onmessage = oldHandler;
-          clearTimeout(timeoutId);
-          
-          if (msg.error) {
-            reject(new Error(msg.error));
-          } else {
-            resolve(msg.result);
-          }
-        } else {
-          // Passer le message à l'ancien gestionnaire
-          oldHandler(msg);
-        }
-      };
-      
-      // Générer un ID unique pour cette requête
-      const requestId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
-      params.requestId = requestId;
-      
-      // Envoyer la requête à l'UI
-      figma.ui.postMessage({
-        type: 'mcp-request',
-        tool: toolName,
-        params: params,
-        requestId: requestId
+    try {
+      const response = await fetch(this.webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(data)
       });
       
-      // Timeout
-      timeoutId = setTimeout(() => {
-        figma.ui.onmessage = oldHandler;
-        reject(new Error(`Timeout lors de l'appel MCP: ${toolName}`));
-      }, this.timeout);
-    });
-  }
-  
-  // Traitement local en cas de MCP indisponible
-  async fallbackLocalProcessing(toolName, params) {
-    console.log(`🔧 Traitement local: ${toolName}`);
-    
-    switch (toolName) {
-      case 'analyze_figma_project':
-        // Utiliser les fonctions locales existantes
-        return extractCompleteProject();
-        
-      case 'extract_project_screens':
-        return extractCompleteProject().screens;
-        
-      case 'analyze_screen_content':
-        if (params.screen) {
-          return analyzeFrameContent(params.screen);
-        }
-        break;
-        
-      case 'export_screenshots_batch':
-        // Utiliser la fonction locale existante pour chaque écran
-        if (params.screens && Array.isArray(params.screens)) {
-          const results = [];
-          for (const screen of params.screens) {
-            try {
-              const node = figma.getNodeById(screen.id);
-              if (node) {
-                const url = await exportAndUploadScreenshot(node);
-                // Créer un nouvel objet sans utiliser le spread operator
-                const screenWithUrl = {};
-                for (const key in screen) {
-                  screenWithUrl[key] = screen[key];
-                }
-                screenWithUrl.screenshot_url = url;
-                results.push(screenWithUrl);
-              }
-            } catch (error) {
-              console.error(`❌ Erreur export ${screen.name}:`, error);
-            }
-          }
-          return results;
-        }
-        break;
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`❌ Erreur n8n HTTP ${response.status}: ${errorText}`);
+        throw new Error(`Erreur n8n: ${response.status}`);
+      }
+      
+      const responseData = await response.json();
+      console.log(`✅ Réponse n8n reçue`);
+      return responseData;
+      
+    } catch (error) {
+      console.error(`❌ Erreur n8n: ${error.message}`);
+      throw error;
     }
-    
-    throw new Error(`Outil MCP non implémenté en local: ${toolName}`);
   }
 }
 
-// Initialiser le client MCP
-const mcpClient = new MCPClient(CONFIG.mcp);
+// Initialiser le client n8n
+const n8nClient = new N8nClient(CONFIG.n8n);
 
 // Interface avec le frontend
 figma.showUI(__html__, { 
@@ -163,41 +86,32 @@ function sendSelectionInfo() {
   });
 }
 
-// Gestion des messages du frontend
+// Configuration du gestionnaire de messages principal
 figma.ui.onmessage = async (msg) => {
+  console.log('📩 Message reçu:', msg.type);
+  
   try {
     switch (msg.type) {
-      
-      // ═══════════════════════════════════════════════════════════
-      // MODE ÉCRAN INDIVIDUEL (EXISTANT)
-      // ═══════════════════════════════════════════════════════════
+      // Scan du projet
+      case 'scan-project':
+        console.log('Démarrage du scan du projet...');
+        const projectData = await handleProjectScan();
+        break;
+        
+      // Autres messages...
       case 'generate-single-spec':
         await handleSingleScreenAnalysis();
-        break;
-      
-      // ═══════════════════════════════════════════════════════════
-      // MODE PROJET COMPLET (NOUVEAU)
-      // ═══════════════════════════════════════════════════════════
-      case 'scan-project':
-        await handleProjectScan();
         break;
         
       case 'start-contextual-analysis':
         await handleContextualAnalysis(msg.context);
         break;
-
-      // ══════════════════════════════════════════════════
-      // GESTION MCP
-      // ══════════════════════════════════════════════════
-      case 'mcp-response':
-        // Géré par le client MCP
-        break;
         
       default:
-        console.log('Message non géré:', msg.type);
+        console.warn('⚠️ Message non géré:', msg.type);
     }
   } catch (error) {
-    console.error('Erreur:', error);
+    console.error('Erreur dans le gestionnaire de messages:', error);
     figma.notify(`❌ Erreur: ${error.message}`);
     figma.ui.postMessage({ 
       type: 'error', 
@@ -205,6 +119,11 @@ figma.ui.onmessage = async (msg) => {
     });
   }
 };
+
+// S'assurer que la fonction onmessage est correctement exportée
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { onmessage };
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // FONCTIONS MODE ÉCRAN INDIVIDUEL
@@ -235,99 +154,6 @@ async function handleSingleScreenAnalysis() {
   figma.notify('📷 Export en cours...');
   
   try {
-    if (CONFIG.mcp.enabled) {
-      figma.notify('🔍 Analyse via MCP...');
-      
-      // SOLUTION ROBUSTE : Générer toujours un ID utilisable
-      if (!fileKey) {
-        // Générer un ID temporaire basé sur le nom du fichier et la date
-        fileKey = `temp_${figma.root.name.replace(/\s+/g, '_').toLowerCase()}_${Date.now()}`;
-        console.log('💾 Mode développement: ID temporaire généré:', fileKey);
-        figma.notify('⚠️ Mode développement détecté - Images simulées utilisées', { timeout: 3000 });
-      }
-      
-      console.log('🔑 File Key détecté:', fileKey);
-      
-      // ✅ CORRECTION : Préparer les données dans le bon format
-      const screenData = {
-        id: frame.id,
-        name: frame.name,
-        figma_url: `https://figma.com/file/${fileKey}?node-id=${frame.id}`,
-        dimensions: {
-          width: frame.width,
-          height: frame.height
-        },
-        page_name: figma.currentPage.name
-      };
-      
-      console.log('📱 Données écran préparées:', screenData);
-      
-      // 2. Analyser le contenu de l'écran via MCP
-      const analyzedScreen = await mcpClient.call('analyze_screen_content', {
-        screen: screenData,
-        figma_file_key: fileKey
-      });
-      
-      console.log('✅ Écran analysé:', analyzedScreen);
-      
-      // ✅ CORRECTION : Format exact attendu par le MCP avec les IDs d'écran
-      // Créer un objet combiné sans utiliser l'opérateur de décomposition (...)
-      const combinedScreenData = {};
-      
-      // Copier les propriétés de screenData
-      for (const key in screenData) {
-        combinedScreenData[key] = screenData[key];
-      }
-      
-      // Copier les propriétés de analyzedScreen
-      if (analyzedScreen && typeof analyzedScreen === 'object') {
-        for (const key in analyzedScreen) {
-          combinedScreenData[key] = analyzedScreen[key];
-        }
-      }
-      
-      const mcpPayload = {
-        screens: [combinedScreenData],
-        figma_file_key: fileKey
-      };
-      
-      console.log('📤 Payload envoyé au MCP:', mcpPayload);
-      
-      // Logs de débogage supplémentaires
-      console.log('📤 DEBUG - Données envoyées à export_screenshots_batch:');
-      console.log('- screens[0].id:', mcpPayload.screens[0].id); // Vérifier que l'ID est bien présent
-      console.log('- screens:', JSON.stringify(mcpPayload.screens, null, 2));
-      console.log('- figma_file_key:', mcpPayload.figma_file_key);
-      console.log('- Type screens:', Array.isArray(mcpPayload.screens) ? 'Array' : typeof mcpPayload.screens);
-      console.log('- Type figma_file_key:', typeof mcpPayload.figma_file_key);
-      
-      // 3. Exporter la capture d'écran via MCP avec le bon format
-      const screensWithImages = await mcpClient.call('export_screenshots_batch', mcpPayload);
-      
-      console.log('✅ Screenshots exportés:', screensWithImages);
-      
-      // ✅ ARRÊTER ICI si MCP réussit
-      if (screensWithImages && screensWithImages.length > 0) {
-        const screenWithImage = screensWithImages[0];
-        
-        // Vérifier que l'URL screenshot est valide
-        if (screenWithImage.screenshot_url && 
-            !screenWithImage.screenshot_url.includes('undefined') &&
-            !screenWithImage.screenshot_url.includes('example.com')) {
-          
-          figma.notify('✅ Spécification en cours de génération via MCP !');
-          figma.ui.postMessage({ type: 'single-success' });
-          return;
-        } else {
-          console.warn('⚠️ URL screenshot invalide:', screenWithImage.screenshot_url);
-          figma.notify('⚠️ Fallback vers traitement local...');
-        }
-      }
-      
-    } else {
-      console.log('🔧 MCP désactivé, mode local');
-    }
-    
     // Traitement local (fallback) - SEULEMENT si MCP échoue
     figma.notify('🔧 Export local en cours...');
     
@@ -347,16 +173,11 @@ async function handleSingleScreenAnalysis() {
     
     console.log('📤 Envoi vers N8N (mode fallback):', screenData);
     
-    // COMMENTÉ TEMPORAIREMENT POUR ÉVITER L'ERREUR CORS
-    /*
-    const response = await fetch(CONFIG.webhooks.single_screen, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: 'single_screen_analysis',
-        screen_data: screenData,
-        source: 'figma_plugin_fallback'
-      })
+    // Envoi des données à n8n
+    const response = await n8nClient.sendToN8n({
+      type: 'single_screen_analysis',
+      screen_data: screenData,
+      source: 'figma_plugin_fallback'
     });
     
     if (response.ok) {
@@ -365,11 +186,6 @@ async function handleSingleScreenAnalysis() {
     } else {
       throw new Error(`HTTP ${response.status}`);
     }
-    */
-    
-    // Temporaire : juste signaler le succès
-    figma.notify('✅ Export terminé (mode local) !');
-    figma.ui.postMessage({ type: 'single-success' });
     
   } catch (error) {
     console.error('❌ Erreur handleSingleScreenAnalysis:', error);
@@ -391,28 +207,10 @@ async function handleProjectScan() {
   figma.notify('🔍 Scan du projet en cours...');
   
   try {
-    let projectData;
+    // Extraction locale des écrans et envoi à l'UI
+    const projectData = await extractCompleteProject();
     
-    // Utiliser le MCP pour le scan du projet si activé
-    if (CONFIG.mcp.enabled) {
-      figma.notify('🔍 Scan via MCP...');
-      
-      try {
-        // Extraction des écrans via MCP
-        projectData = await mcpClient.call('extract_project_screens', {
-          figma_file_key: figma.fileKey
-        });
-        
-        figma.notify('✅ Scan MCP terminé');
-      } catch (mcpError) {
-        console.error('Erreur MCP scan:', mcpError);
-        figma.notify('⚠️ Fallback vers scan local...');
-        projectData = await extractCompleteProject();
-      }
-    } else {
-      // Extraction locale
-      projectData = await extractCompleteProject();
-    }
+    figma.notify('✅ Extraction des écrans terminée, préparation pour upload...');
     
     figma.ui.postMessage({
       type: 'project-scanned',
@@ -441,19 +239,22 @@ async function handleContextualAnalysis(userContext) {
     
     try {
       // Analyse complète du projet via MCP
-      const projectAnalysis = await mcpClient.call('analyze_figma_project', {
-        figma_file_key: figma.fileKey,
-        business_context: {
-          project_objective: userContext.project_objective,
-          target_users: userContext.target_users,
-          project_type: userContext.project_type,
-          detail_level: userContext.detail_level,
-          required_integrations: userContext.integrations
-        },
-        options: {
-          include_screenshots: true,
-          include_design_system: true,
-          include_user_flows: true
+      const projectAnalysis = await n8nClient.sendToN8n({
+        type: 'contextual_analysis',
+        project_data: {
+          figma_file_key: figma.fileKey,
+          business_context: {
+            project_objective: userContext.project_objective,
+            target_users: userContext.target_users,
+            project_type: userContext.project_type,
+            detail_level: userContext.detail_level,
+            required_integrations: userContext.integrations
+          },
+          options: {
+            include_screenshots: true,
+            include_design_system: true,
+            include_user_flows: true
+          }
         }
       });
       
@@ -489,47 +290,62 @@ async function handleContextualAnalysis(userContext) {
 // ═══════════════════════════════════════════════════════════════════
 
 async function extractCompleteProject() {
+  figma.notify('🔍 Analyse de la page active en cours...');
+  
   const projectData = {
     metadata: {
       name: figma.root.name,
       id: figma.root.id,
+      figma_file_key: figma.fileKey,
       figma_url: `https://figma.com/file/${figma.fileKey}`,
-      total_pages: figma.root.children.length,
-      extracted_at: new Date().toISOString()
+      total_pages: 1, // Seulement la page active
+      extracted_at: new Date().toISOString(),
+      current_page: figma.currentPage.name
     },
-    screens: [],
-    pages_breakdown: [],
-    flows: {},
-    design_system: {}
+    screens: []
   };
   
-  // Parcours de toutes les pages
-  for (const page of figma.root.children) {
-    figma.notify(`📄 Analyse page: ${page.name}`);
-    
-    const pageScreens = [];
-    
-    // Extraction des frames de la page
-    for (const node of page.children) {
-      if (node.type === 'FRAME' && isMainScreen(node)) {
-        const screenData = await extractScreenData(node, page.name);
-        pageScreens.push(screenData);
-        projectData.screens.push(screenData);
+  // Analyse uniquement de la page active
+  const currentPage = figma.currentPage;
+  figma.notify(`📄 Analyse page: ${currentPage.name}`);
+  
+  // Extraction des frames de la page active
+  for (const node of currentPage.children) {
+    if (node.type === 'FRAME' && isMainScreen(node)) {
+      try {
+        // Exporter l'image en PNG
+        const bytes = await node.exportAsync({
+          format: 'PNG',
+          constraint: { type: 'SCALE', value: 2 } // Haute résolution
+        });
+        
+        // Convertir ArrayBuffer en base64
+        const base64Image = arrayBufferToBase64(bytes);
+        
+        // Ajouter à la liste des écrans
+        projectData.screens.push({
+          id: node.id,
+          name: node.name,
+          page: currentPage.name,
+          width: node.width,
+          height: node.height,
+          image: `data:image/png;base64,${base64Image}`
+        });
+      } catch (error) {
+        console.error(`Erreur export ${node.name}:`, error);
       }
     }
-    
-    projectData.pages_breakdown.push({
-      name: page.name,
-      screen_count: pageScreens.length,
-      page_type: inferPageType(page.name)
-    });
   }
   
-  // Détection des flows entre écrans
-  projectData.flows = detectScreenFlows(projectData.screens);
-  
-  // Extraction design system
-  projectData.design_system = extractDesignSystem();
+  // Envoyer à l'UI pour upload Cloudinary
+  figma.ui.postMessage({
+    type: 'upload-screens',
+    screens: projectData.screens,
+    project: {
+      name: projectData.metadata.name,
+      file_key: projectData.metadata.figma_file_key
+    }
+  });
   
   return projectData;
 }
@@ -735,6 +551,11 @@ async function exportAndUploadScreenshot(frame) {
   }
 }
 
+// Fonction pour convertir un ArrayBuffer en base64
+function arrayBufferToBase64(buffer) {
+  return figma.base64Encode(buffer);
+}
+
 // Fonctions utilitaires
 function isMainScreen(node) {
   return node.type === 'FRAME' && 
@@ -812,42 +633,5 @@ function extractComponents() {
   // Extraction des composants
   return [];
 }
-
-// Configuration du gestionnaire de messages principal
-figma.ui.onmessage = async (msg) => {
-  console.log('📩 Message reçu:', msg.type);
-  
-  switch (msg.type) {
-    case 'update-mcp-config':
-      // Mettre à jour la configuration MCP
-      CONFIG.mcp = msg.config;
-      // Réinitialiser le client MCP avec la nouvelle configuration
-      mcpClient = new MCPClient(CONFIG.mcp);
-      console.log('🔄 Configuration MCP mise à jour:', CONFIG.mcp);
-      break;
-      
-    case 'generate-single-spec':
-      await handleSingleScreenAnalysis();
-      break;
-      
-    case 'start-project-scan':
-      await handleProjectScan();
-      break;
-      
-    case 'analyze-project-context':
-      await handleContextualAnalysis(msg.context);
-      break;
-      
-    case 'upload-complete':
-    case 'upload-error':
-      // Ces messages sont gérés par des gestionnaires temporaires
-      // dans les fonctions qui les attendent
-      break;
-      
-    default:
-      console.warn('⚠️ Message non géré:', msg.type);
-      break;
-  }
-};
 
 console.log('✅ Plugin code loaded');
